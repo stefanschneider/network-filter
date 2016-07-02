@@ -177,12 +177,19 @@ int main(int argc, const char** argv) {
 
 	DWORD status;
 
-	if (argc!=2) {
-		printf("This program requires one argument, the name of the host to block.");
+	UINT16 port = 0;
+
+	if (argc<2) {
+		printf("This program requires at least one argument, the name of the host to block, and optionally the port.");
 		return 0;
 	}
 
 	printf("Atttempting to block access to %s\n", argv[1]);
+
+	if (argc >= 3) {
+		port = atoi(argv[2]);
+		printf("port %u\n", port);
+	}
 
 	WORD wVersionRequested;
 	WSADATA wsaData;
@@ -241,7 +248,7 @@ int main(int argc, const char** argv) {
 	filter.layerKey = FWPM_LAYER_ALE_AUTH_CONNECT_V4; // flow details: https://msdn.microsoft.com/en-us/library/windows/desktop/bb451830(v=vs.85).aspx
 	filter.action.type = FWP_ACTION_BLOCK;
 	filter.weight.type = FWP_EMPTY; // auto-weight.
-
+	filter.numFilterConditions = 0;
 	
 
 	FWP_V4_ADDR_AND_MASK addr_and_mask;
@@ -250,7 +257,7 @@ int main(int argc, const char** argv) {
 	addr_and_mask.mask = 0xFFFFFFFF;
 
 
-	FWPM_FILTER_CONDITION0 conds[2];
+	FWPM_FILTER_CONDITION0 conds[3];
 	RtlZeroMemory(conds, sizeof(conds));
 
 	//FWPM_FILTER_CONDITION0 filterCondition;
@@ -261,6 +268,7 @@ int main(int argc, const char** argv) {
 	conds[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
 	conds[0].conditionValue.type = FWP_V4_ADDR_MASK;
 	conds[0].conditionValue.v4AddrMask = &addr_and_mask;
+	filter.numFilterConditions++;
 
 	// Per user condition 
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/bb427381(v=vs.85).aspx
@@ -301,9 +309,16 @@ int main(int argc, const char** argv) {
 	conds[1].matchType = FWP_MATCH_NOT_EQUAL;
 	conds[1].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
 	conds[1].conditionValue.sd = &sdBlob;
+	filter.numFilterConditions++;
 
+	if (port != 0) {
+		conds[filter.numFilterConditions].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+		conds[filter.numFilterConditions].matchType = FWP_MATCH_EQUAL;
+		conds[filter.numFilterConditions].conditionValue.type = FWP_UINT16;
+		conds[filter.numFilterConditions].conditionValue.uint16 = port;
+		filter.numFilterConditions++;
+	}
 
-	filter.numFilterConditions = 2;
 
 	UINT64 filterId;
 	status = FwpmFilterAdd0(FwpmHandle, &filter, NULL, &filterId);
