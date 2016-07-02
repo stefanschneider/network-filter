@@ -6,8 +6,28 @@
 
 #include <windows.h>
 #include <fwpmu.h>
+#include <sddl.h>
+
 
 #include <stdio.h>
+
+
+
+#define EXIT_ON_ERROR(fnName) \
+   if (result != ERROR_SUCCESS) \
+   { \
+      printf(#fnName " = 0x%08X\n", result); \
+      return result; \
+   }
+
+#define EXIT_ON_LAST_ERROR(success, fnName) \
+   if (!(success)) \
+   { \
+      result = GetLastError(); \
+      printf(#fnName " = 0x%08X\n", result); \
+      return result; \
+   }
+
 
 // {CE0DEAD9-E4D1-41B3-BDAA-B7DB5843EEB9}
 static const GUID filterKeyGuid =
@@ -153,6 +173,7 @@ CLEANUP:
 
 
 int main(int argc, const char** argv) {
+	DWORD result = ERROR_SUCCESS;
 
 	DWORD status;
 
@@ -198,10 +219,10 @@ int main(int argc, const char** argv) {
 	status = FwpmEngineOpen0(NULL, RPC_C_AUTHN_WINNT, NULL, NULL, &FwpmHandle);
 	
 	// clear any previous filter
-	FwpmFilterDeleteByKey0(FwpmHandle, &filterKeyGuid);
+	FwpmFilterDeleteByKey0(FwpmHandle, &filterKeyGuid);	
 
-	FWPM_FILTER_CONDITION0 conds[2];
 	FWPM_FILTER0 filter;
+	RtlZeroMemory(&filter, sizeof(FWPM_FILTER0));
 
 	printf("FwpmEngineOpen0 result code %x\n", status);
 	if (status != ERROR_SUCCESS) {
@@ -210,7 +231,7 @@ int main(int argc, const char** argv) {
 
 	printf("FwpmEngine started %x\n", (unsigned)FwpmHandle);
 
-	RtlZeroMemory(&filter, sizeof(FWPM_FILTER0));
+	
 
 	//KEY
 	filter.filterKey = filterKeyGuid;
@@ -221,22 +242,69 @@ int main(int argc, const char** argv) {
 	filter.action.type = FWP_ACTION_BLOCK;
 	filter.weight.type = FWP_EMPTY; // auto-weight.
 
-	filter.numFilterConditions = 1;
+	
 
 	FWP_V4_ADDR_AND_MASK addr_and_mask;
 	RtlZeroMemory(&addr_and_mask, sizeof(addr_and_mask));
 	addr_and_mask.addr = ipAddress; //0x2EE42F73
 	addr_and_mask.mask = 0xFFFFFFFF;
 
-	FWPM_FILTER_CONDITION0 filterCondition;
-	RtlZeroMemory(&filterCondition, sizeof(filterCondition));
+
+	FWPM_FILTER_CONDITION0 conds[2];
+	RtlZeroMemory(conds, sizeof(conds));
+
+	//FWPM_FILTER_CONDITION0 filterCondition;
+	//RtlZeroMemory(&filterCondition, sizeof(filterCondition));
 	
-	filter.filterCondition = &filterCondition;
-	filterCondition.matchType = FWP_MATCH_EQUAL;
-	filterCondition.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
-	filterCondition.conditionValue.type = FWP_V4_ADDR_MASK;
-	filterCondition.conditionValue.v4AddrMask = &addr_and_mask;
-	
+	filter.filterCondition = conds;
+	conds[0].matchType = FWP_MATCH_EQUAL;
+	conds[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+	conds[0].conditionValue.type = FWP_V4_ADDR_MASK;
+	conds[0].conditionValue.v4AddrMask = &addr_and_mask;
+
+	// Per user condition 
+	// https://msdn.microsoft.com/en-us/library/windows/desktop/bb427381(v=vs.85).aspx
+
+	//////////
+	// The second condition matches any user who is a member of the built-in
+	// Administrators group.
+	//////////
+
+	PSECURITY_DESCRIPTOR sd = NULL;
+	FWP_BYTE_BLOB sdBlob;
+
+	// For well-known security descriptors, it's easiest to build them in one
+	// shot from an SDDL string, rather than constructing them programmatically
+	// using lower-level APIs.
+	BOOL success = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+		L"D:(A;;0x1;;;BA)",
+		SDDL_REVISION_1,
+		&sd,
+		NULL
+	);
+	EXIT_ON_LAST_ERROR(
+		success,
+		ConvertStringSecurityDescriptorToSecurityDescriptorW
+	);
+
+	// Security descriptors must be in self-relative form (i.e., contiguous).
+	// The security descriptor returned by
+	// ConvertStringSecurityDescriptorToSecurityDescriptorW is already
+	// self-relative, but if you're using another mechanism to build the
+	// descriptor, you may have to convert it. See MakeSelfRelativeSD for
+	// details.
+	sdBlob.size = GetSecurityDescriptorLength(sd);
+	sdBlob.data = (UINT8*)sd;
+
+	conds[1].fieldKey = FWPM_CONDITION_ALE_USER_ID;
+	// conds[1].matchType = FWP_MATCH_EQUAL;
+	conds[1].matchType = FWP_MATCH_NOT_EQUAL;
+	conds[1].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
+	conds[1].conditionValue.sd = &sdBlob;
+
+
+	filter.numFilterConditions = 2;
+
 	UINT64 filterId;
 	status = FwpmFilterAdd0(FwpmHandle, &filter, NULL, &filterId);
 
